@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -17,8 +18,8 @@ import (
 )
 
 const (
-	TMP_DIR_NAME  = ".tmp"
-	TMP_FILE_NAME = "scrape-suumo-v20220206T2340.json"
+	TMP_DIR_NAME  = ".cache"
+	TMP_FILE_NAME = "scrape-suumo-v20220207T0145.json"
 )
 
 type CliArgs struct {
@@ -410,12 +411,17 @@ func getMaxPageNum(s *goquery.Selection) int {
 }
 
 func tmpDirPath() string {
-	ex, err := os.Executable()
+	// ex, err := os.Executable()
+	// if err != nil {
+	// 	postToSlack(err.Error())
+	// 	log.Fatal(err.Error())
+	// }
+	// baseDir := filepath.Dir(ex)
+	user, err := user.Current()
 	if err != nil {
-		postToSlack(err.Error())
 		log.Fatal(err.Error())
 	}
-	baseDir := filepath.Dir(ex)
+	baseDir := user.HomeDir
 	return filepath.Join(baseDir, TMP_DIR_NAME)
 }
 

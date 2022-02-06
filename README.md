@@ -1,25 +1,48 @@
 scrape-suumo
 =================
 
-## feature
-
 - 検索結果 URL を渡して物件情報のサマリーを出力します。
-- 実行ファイルと同じディレクトリに `.tmp` ディレクトリを作成し、取得データを JSON でキャッシュします。
+- ホームディレクトリ直下に `.cache` ディレクトリが無ければ作成し、取得データを JSON でキャッシュします。
 - キャッシュがある場合、差分を抽出して出力します。
 - cron で定期的に動かして Slack に流す事を想定しています。
-- golang の勉強ついでに作りました。
 
+
+## build
+
+```sh
+make build
+```
+
+Raspberry Pi 用
+
+```sh
+make build-armv7
+```
 
 ## usage
 
-### example
+```sh
+Usage of ./scrape-suumo:
+  -channel string
+        slack channel name
+  -no-slack
+        not use slack
+  -refresh
+        refresh suumo cache
+  -token string
+        slack access token
+  -url string
+        <required> suumo url of the search result
+```
+
+example:
 
 ```sh
-./scrape-suumo \
+scrape-suumo \
   -url="https://suumo.jp/jj/chintai/ichiran/FR301FC001/?ar=030&bs=040&ta=13&sc=13113&cb=7.0&ct=15.0&et=15&md=02&md=03&md=04&md=05&md=06&cn=25&mb=40&mt=9999999&tc=0401303&tc=0400101&tc=0400104&tc=0400501&tc=0400502&tc=0400601&tc=0400301&shkr1=03&shkr2=03&shkr3=03&shkr4=03&fw2=&srch_navi=1"
 ```
 
-### result
+result:
 
 ```sh
 Apartments: 3
@@ -69,20 +92,4 @@ Total Rooms: 3
     - 礼金: 12.8万円
     - 敷金: 12.8万円
     - URL: https://suumo.jp/chintai/jnc_000046674934/?bc=100268878872
-```
-
-### options
-
-```sh
-Usage of ./scrape-suumo:
-  -channel string
-        slack channel name
-  -no-slack
-        not use slack
-  -refresh
-        refresh suumo cache
-  -token string
-        slack access token
-  -url string
-        <required> suumo url of the search result
 ```
