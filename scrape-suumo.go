@@ -136,6 +136,193 @@ func parseFlags() {
 	args.noSlack = noSlack
 }
 
+func initSlack() {
+	if args.useSlack {
+		slackApi = slack.New(args.slackToken)
+	}
+}
+
+func initTmps(noCache bool) {
+	initTmpDir()
+	initTmpFile(noCache)
+}
+
+func initTmpDir() {
+	tmpDir := tmpDirPath()
+	if f, e := os.Stat(tmpDir); os.IsNotExist(e) || !f.IsDir() {
+		if e := os.Mkdir(tmpDir, 0766); e != nil {
+			postToSlack(e.Error())
+			log.Fatal(e.Error())
+		}
+	}
+}
+
+func initTmpFile(noCache bool) {
+	tmpFilePath := tmpFilePath()
+	if f, e := os.Stat(tmpFilePath); noCache || os.IsNotExist(e) || f.IsDir() {
+		data := new(Suumo)
+		saveTmpData(data)
+	}
+}
+
+func saveTmpData(d *Suumo) {
+	bytes, e := json.Marshal(d)
+	if e != nil {
+		postToSlack(e.Error())
+		log.Fatal(e.Error())
+	}
+
+	if e := os.WriteFile(tmpFilePath(), bytes, 0766); e != nil {
+		postToSlack(e.Error())
+		log.Fatal(e.Error())
+	}
+}
+
+func postToSlack(message string) {
+	if slackApi != nil && !args.noSlack {
+		ch, ts, err := slackApi.PostMessage(args.slackChannel, slack.MsgOptionText(message, true))
+		if err != nil {
+			log.Fatal(err.Error())
+		}
+		fmt.Println("channel="+ch, "timestamp="+ts)
+	}
+}
+
+func fetcHtmlBody(ch chan<- string, url string) {
+	c := colly.NewCollector()
+	c.OnScraped(func(r *colly.Response) {
+		bodyStr := string(r.Body)
+		ch <- bodyStr
+	})
+	c.Visit(url)
+}
+
+func parseToGoqueryDoc(html string) *goquery.Document {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		postToSlack(err.Error())
+		log.Fatal(err.Error())
+	}
+	return doc
+}
+
+func extractSuumo(doc *goquery.Document) *Suumo {
+	condArea := doc.Find("#js-condTop-panel").Text()
+	hit := getApartmentHit(doc.Find(".paginate_set-hit").Text())
+	apartments := extractApartments(doc.Selection)
+	totalPage := getMaxPageNum(doc.Selection)
+
+	return &Suumo{
+		CondArea:   trim(condArea),
+		Hit:        hit,
+		TotalPage:  totalPage,
+		Apartments: apartments,
+	}
+}
+
+func getApartmentHit(str string) int {
+	m := regexp.MustCompile(`\s*(\d{1,})件`)
+	matches := m.FindAllStringSubmatch(str, -1)
+	if len(matches) == 0 {
+		errMsg := "no matches: " + str
+		postToSlack(errMsg)
+		log.Fatal(errMsg)
+	}
+	numStr := matches[0][1]
+	num, e := strconv.Atoi(numStr)
+	if e != nil {
+		postToSlack(e.Error())
+		log.Fatal(e.Error())
+	}
+	return num
+}
+
+func extractApartments(dom *goquery.Selection) []*Apartment {
+	var apartments []*Apartment
+	dom.Find("#js-bukkenList > ul.l-cassetteitem > li").Each(func(i int, s *goquery.Selection) {
+		apartments = append(apartments, extractApartment(s))
+	})
+	return apartments
+}
+
+func extractApartment(divCassetteItem *goquery.Selection) *Apartment {
+	name := divCassetteItem.Find(".cassetteitem_content-title").Text()
+	addr := divCassetteItem.Find(".cassetteitem_detail-col1").Text()
+	var transportList []string
+	divCassetteItem.Find(".cassetteitem_detail-col2 > .cassetteitem_detail-text").Each(func(i int, el *goquery.Selection) {
+		transportList = append(transportList, trim(el.Text()))
+	})
+	age := divCassetteItem.Find(".cassetteitem_detail-col3 > div:nth-child(1)").Text()
+	totalFloorStr := divCassetteItem.Find(".cassetteitem_detail-col3 > div:nth-child(2)").Text()
+
+	return &Apartment{
+		Name:          trim(name),
+		Address:       trim(addr),
+		Transports:    transportList,
+		AgeOfBuilding: trim(age),
+		TotalFloor:    trim(totalFloorStr),
+		Rooms:         extractRooms(divCassetteItem),
+	}
+}
+
+func extractRooms(divCassetteItem *goquery.Selection) []*Room {
+	var rooms []*Room
+	tbodies := divCassetteItem.Find("div.cassetteitem-item > table.cassetteitem_other > tbody")
+	tbodies.Each(func(i int, tbody *goquery.Selection) {
+		rm := new(Room)
+
+		imgEl := tbody.Find("div.casssetteitem_other-thumbnail > img")
+		imgUrl, existImgSrc := imgEl.Attr("src")
+		if existImgSrc {
+			rm.Thumbnail = trim(imgUrl)
+		}
+
+		floorNumStr := tbody.Find("td:nth-child(3)").Text()
+		floorNumStr = strings.Trim(floorNumStr, " ")
+		rm.Floor = trim(floorNumStr)
+
+		rentStr := tbody.Find(".cassetteitem_price--rent").Text()
+		rm.RentPrice = trim(rentStr)
+
+		adminStr := tbody.Find(".cassetteitem_price--administration").Text()
+		rm.AdminPrice = trim(adminStr)
+
+		depositStr := tbody.Find(".cassetteitem_price--deposit").Text()
+		rm.DepositPrice = trim(depositStr)
+
+		gratuityStr := tbody.Find(".cassetteitem_price--gratuity").Text()
+		rm.GratuityPrice = trim(gratuityStr)
+
+		madori := tbody.Find(".cassetteitem_madori").Text()
+		rm.Madori = trim(madori)
+
+		menseki := tbody.Find(".cassetteitem_menseki").Text()
+		rm.Menseki = trim(menseki)
+
+		urlPath, urlExist := tbody.Find("td").Last().Find("a").Attr("href")
+		if urlExist {
+			rm.Url = "https://suumo.jp" + trim(urlPath)
+		}
+
+		rooms = append(rooms, rm)
+	})
+	return rooms
+}
+
+func loadPrevSuumo() *Suumo {
+	bytes, e := os.ReadFile(tmpFilePath())
+	if e != nil {
+		postToSlack(e.Error())
+		log.Fatal(e.Error())
+	}
+	var prevData *Suumo
+	if e := json.Unmarshal(bytes, &prevData); e != nil {
+		postToSlack(e.Error())
+		log.Fatal(e.Error())
+	}
+	return prevData
+}
+
 func genApartmentMessages(apts []*Apartment) []string {
 	var aptMsgs []string
 	for i := 0; i < len(apts); i++ {
@@ -214,69 +401,12 @@ func findApartmentIndex(aps []*Apartment, needle *Apartment) int {
 	return index
 }
 
-func extractSuumo(doc *goquery.Document) *Suumo {
-	condArea := doc.Find("#js-condTop-panel").Text()
-	hit := getApartmentHit(doc.Find(".paginate_set-hit").Text())
-	apartments := extractApartments(doc.Selection)
-	totalPage := getMaxPageNum(doc.Selection)
-
-	return &Suumo{
-		CondArea:   trim(condArea),
-		Hit:        hit,
-		TotalPage:  totalPage,
-		Apartments: apartments,
-	}
-}
-
-func fetcHtmlBody(ch chan<- string, url string) {
-	c := colly.NewCollector()
-	c.OnScraped(func(r *colly.Response) {
-		bodyStr := string(r.Body)
-		ch <- bodyStr
-	})
-	c.Visit(url)
-}
-
-func parseToGoqueryDoc(html string) *goquery.Document {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		postToSlack(err.Error())
-		log.Fatal(err.Error())
-	}
-	return doc
-}
-
-func getElement(s *goquery.Document, selector string) string {
-	html, e := s.Find(selector).Html()
-	if e != nil {
-		log.Fatal(e.Error())
-	}
-	return html
-}
-
 func getMaxPageNum(s *goquery.Selection) int {
 	i, e := strconv.Atoi(s.Find(".pagination-parts > li").Last().Text())
 	if e != nil {
 		log.Fatal(e.Error())
 	}
 	return i
-}
-
-func getApartmentHit(str string) int {
-	m := regexp.MustCompile(`\s*(\d{1,})件`)
-	matches := m.FindAllStringSubmatch(str, -1)
-	if len(matches) == 0 {
-		errMsg := "no matches: " + str
-		postToSlack(errMsg)
-		log.Fatal(errMsg)
-	}
-	numStr := matches[0][1]
-	num, e := strconv.Atoi(numStr)
-	if e != nil {
-		postToSlack(e.Error())
-		log.Fatal(e.Error())
-	}
-	return num
 }
 
 func tmpDirPath() string {
@@ -291,144 +421,6 @@ func tmpDirPath() string {
 
 func tmpFilePath() string {
 	return filepath.Join(tmpDirPath(), TMP_FILE_NAME)
-}
-
-func initTmps(noCache bool) {
-	initTmpDir()
-	initTmpFile(noCache)
-}
-
-func initTmpDir() {
-	tmpDir := tmpDirPath()
-	if f, e := os.Stat(tmpDir); os.IsNotExist(e) || !f.IsDir() {
-		if e := os.Mkdir(tmpDir, 0766); e != nil {
-			postToSlack(e.Error())
-			log.Fatal(e.Error())
-		}
-	}
-}
-
-func initTmpFile(noCache bool) {
-	tmpFilePath := tmpFilePath()
-	if f, e := os.Stat(tmpFilePath); noCache || os.IsNotExist(e) || f.IsDir() {
-		data := new(Suumo)
-		saveTmpData(data)
-	}
-}
-
-func loadPrevSuumo() *Suumo {
-	bytes, e := os.ReadFile(tmpFilePath())
-	if e != nil {
-		postToSlack(e.Error())
-		log.Fatal(e.Error())
-	}
-	var prevData *Suumo
-	if e := json.Unmarshal(bytes, &prevData); e != nil {
-		postToSlack(e.Error())
-		log.Fatal(e.Error())
-	}
-	return prevData
-}
-
-func saveTmpData(d *Suumo) {
-	bytes, e := json.Marshal(d)
-	if e != nil {
-		postToSlack(e.Error())
-		log.Fatal(e.Error())
-	}
-
-	if e := os.WriteFile(tmpFilePath(), bytes, 0766); e != nil {
-		postToSlack(e.Error())
-		log.Fatal(e.Error())
-	}
-}
-
-func initSlack() {
-	if args.useSlack {
-		slackApi = slack.New(args.slackToken)
-	}
-}
-
-func postToSlack(message string) {
-	if slackApi != nil && !args.noSlack {
-		ch, ts, err := slackApi.PostMessage(args.slackChannel, slack.MsgOptionText(message, true))
-		if err != nil {
-			log.Fatal(err.Error())
-		}
-		fmt.Println("channel="+ch, "timestamp="+ts)
-	}
-}
-
-func extractApartments(dom *goquery.Selection) []*Apartment {
-	var apartments []*Apartment
-	dom.Find("#js-bukkenList > ul.l-cassetteitem > li").Each(func(i int, s *goquery.Selection) {
-		apartments = append(apartments, extractApartment(s))
-	})
-	return apartments
-}
-
-func extractApartment(divCassetteItem *goquery.Selection) *Apartment {
-	name := divCassetteItem.Find(".cassetteitem_content-title").Text()
-	addr := divCassetteItem.Find(".cassetteitem_detail-col1").Text()
-	var transportList []string
-	divCassetteItem.Find(".cassetteitem_detail-col2 > .cassetteitem_detail-text").Each(func(i int, el *goquery.Selection) {
-		transportList = append(transportList, trim(el.Text()))
-	})
-	age := divCassetteItem.Find(".cassetteitem_detail-col3 > div:nth-child(1)").Text()
-	totalFloorStr := divCassetteItem.Find(".cassetteitem_detail-col3 > div:nth-child(2)").Text()
-
-	return &Apartment{
-		Name:          trim(name),
-		Address:       trim(addr),
-		Transports:    transportList,
-		AgeOfBuilding: trim(age),
-		TotalFloor:    trim(totalFloorStr),
-		Rooms:         extractRooms(divCassetteItem),
-	}
-}
-
-func extractRooms(divCassetteItem *goquery.Selection) []*Room {
-	var rooms []*Room
-	tbodies := divCassetteItem.Find("div.cassetteitem-item > table.cassetteitem_other > tbody")
-	tbodies.Each(func(i int, tbody *goquery.Selection) {
-		rm := new(Room)
-
-		imgEl := tbody.Find("div.casssetteitem_other-thumbnail > img")
-		imgUrl, existImgSrc := imgEl.Attr("src")
-		if existImgSrc {
-			rm.Thumbnail = trim(imgUrl)
-		}
-
-		floorNumStr := tbody.Find("td:nth-child(3)").Text()
-		floorNumStr = strings.Trim(floorNumStr, " ")
-		rm.Floor = trim(floorNumStr)
-
-		rentStr := tbody.Find(".cassetteitem_price--rent").Text()
-		rm.RentPrice = trim(rentStr)
-
-		adminStr := tbody.Find(".cassetteitem_price--administration").Text()
-		rm.AdminPrice = trim(adminStr)
-
-		depositStr := tbody.Find(".cassetteitem_price--deposit").Text()
-		rm.DepositPrice = trim(depositStr)
-
-		gratuityStr := tbody.Find(".cassetteitem_price--gratuity").Text()
-		rm.GratuityPrice = trim(gratuityStr)
-
-		madori := tbody.Find(".cassetteitem_madori").Text()
-		rm.Madori = trim(madori)
-
-		menseki := tbody.Find(".cassetteitem_menseki").Text()
-		rm.Menseki = trim(menseki)
-
-		urlPath, urlExist := tbody.Find("td").Last().Find("a").Attr("href")
-		if urlExist {
-			rm.Url = "https://suumo.jp" + trim(urlPath)
-		}
-
-		rooms = append(rooms, rm)
-	})
-	return rooms
 }
 
 func trim(str string) string {
