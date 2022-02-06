@@ -2,8 +2,6 @@ module github.com/shohei-ot/scrape-suumo
 
 go 1.17
 
-// require github.com/gocolly/colly v2.1.0+incompatible
-
 require (
 	github.com/PuerkitoBio/goquery v1.8.0
 	github.com/gocolly/colly v1.2.0
