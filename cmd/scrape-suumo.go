@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -18,8 +19,9 @@ import (
 )
 
 const (
-	TMP_DIR_NAME  = ".cache"
-	TMP_FILE_NAME = "scrape-suumo-v20220207T0145.json"
+	TMP_DIR_NAME      = ".cache"
+	OLD_TMP_FILE_NAME = "scrape-suumo-v20220207T0145.json"
+	IGNORE_FILE_NAME  = "scrape-suumo-ignore-v20220208T2122.json"
 )
 
 type CliArgs struct {
@@ -36,6 +38,11 @@ type Suumo struct {
 	CondArea   string `json"cond_area"`
 	TotalPage  int
 	Apartments []*Apartment `json:"apartments"`
+}
+
+type IgnoredApartment struct {
+	Name    string `json:"name"`
+	Address string `json:"address"`
 }
 
 type Apartment struct {
@@ -64,12 +71,125 @@ var (
 	args     CliArgs
 )
 
+func initIgnoredFile(refresh bool) {
+	ignoreFilePath := getIgnoreFilePath()
+	var ignoreFileCreated bool
+	// 無かったら作る
+	if s, e := os.Stat(ignoreFilePath); os.IsNotExist(e) || s.IsDir() || refresh {
+		ignoredApartments := []*IgnoredApartment{}
+		jsonBytes, e := json.Marshal(ignoredApartments)
+		if e != nil {
+			log.Fatal(e.Error())
+		}
+		e = os.WriteFile(ignoreFilePath, jsonBytes, 0700)
+		if e != nil {
+			log.Fatal(e.Error())
+		}
+		ignoreFileCreated = true
+	}
+
+	// old cache があれば移行して削除
+	if ignoreFileCreated {
+		if s, e := os.Stat(tmpFilePath()); !os.IsNotExist(e) && !s.IsDir() {
+			_migrateToIgnoreFile(loadPrevSuumo())
+			_rmOldCacheFile()
+		}
+	}
+}
+
+func _migrateToIgnoreFile(sm *Suumo) {
+	ignoreFilePath := getIgnoreFilePath()
+	ignoreDataBytes, e := os.ReadFile(ignoreFilePath)
+	if e != nil {
+		log.Fatal(e.Error())
+	}
+	ignoreData := []*IgnoredApartment{}
+	if er := json.Unmarshal(ignoreDataBytes, &ignoreData); er != nil {
+		log.Fatal(er.Error())
+	}
+
+	for _, ap := range sm.Apartments {
+		ignAp := new(IgnoredApartment)
+		ignAp.Name = ap.Name
+		ignAp.Address = ap.Address
+		ignoreData = append(ignoreData, ignAp)
+	}
+
+	writeIgnoredApartments(ignoreData)
+}
+
+func _rmOldCacheFile() {
+	oldCacheFilePath := tmpFilePath()
+	if s, e := os.Stat(oldCacheFilePath); os.IsNotExist(e) || s.IsDir() {
+		return
+	}
+
+	e := os.Remove(oldCacheFilePath)
+	if e != nil {
+		log.Fatal(e.Error())
+	}
+}
+
+func getIgnoreFilePath() string {
+	tmpDir := tmpDirPath()
+	return path.Join(tmpDir, IGNORE_FILE_NAME)
+}
+
+func getIgnoredApartments() []*IgnoredApartment {
+	ignoreFilePath := getIgnoreFilePath()
+
+	byts, e := os.ReadFile(ignoreFilePath)
+	if e != nil {
+		log.Fatal(e.Error())
+	}
+	entity := []*IgnoredApartment{}
+	er := json.Unmarshal(byts, &entity)
+	if er != nil {
+		log.Fatal(e.Error())
+	}
+	return entity
+}
+
+func writeIgnoredApartments(apts []*IgnoredApartment) {
+	ignoreFilePath := getIgnoreFilePath()
+
+	byts, e := json.Marshal(apts)
+	if e != nil {
+		log.Fatal(e.Error())
+	}
+	e = os.WriteFile(ignoreFilePath, byts, 0700)
+	if e != nil {
+		log.Fatal(e.Error())
+	}
+}
+
+func excludeOldApartments(sm *Suumo, ig []*IgnoredApartment) []*Apartment {
+	var newestApartments []*Apartment
+	for _, ap := range sm.Apartments {
+		existsInIgnored := false
+		if ig != nil {
+			for _, igAp := range ig {
+				eqApName := ap.Name == igAp.Name
+				eqApAddr := ap.Address == igAp.Address
+				if eqApName && eqApAddr {
+					existsInIgnored = true
+					break
+				}
+			}
+		}
+		if !existsInIgnored {
+			newestApartments = append(newestApartments, ap)
+		}
+	}
+	return newestApartments
+}
+
 func main() {
 	parseFlags()
 	initSlack()
-	initTmps(args.noCache)
+	initTmpDir()
+	initIgnoredFile(args.noCache)
 
-	// url := "https://suumo.jp/jj/chintai/ichiran/FR301FC001/?ar=030&bs=040&fw2=&pc=30&po1=09&po2=99&ta=13&sc=13107&sc=13108&sc=13109&sc=13111&sc=13112&sc=13114&sc=13115&sc=13204&sc=13206&sc=13208&md=02&md=03&md=04&md=05&md=06&md=07&md=08&md=09&md=10&md=11&md=12&md=13&md=14&cb=7.0&ct=13.5&et=15&mb=40&mt=9999999&cn=25&co=1&kz=1&kz=2&kz=3&tc=0401303&tc=0401304&tc=0401301&tc=0401302&tc=0400101&tc=0400103&tc=0400104&tc=0400501&tc=0400502&tc=0400503&tc=0400601&tc=0400301&tc=0400302&tc=0400203&tc=0400205&tc=0400902&tc=0400906&tc=0400907&tc=0400912&tc=0400803&tc=0401106&tc=0400401&tc=0400702&shkr1=02&shkr2=02&shkr3=02&shkr4=02&shkk1=02060202&shkk1=02060203"
 	url := args.suumoUrl
 
 	if len(url) == 0 || strings.Index(url, "https://") != 0 {
@@ -97,9 +217,13 @@ func main() {
 	}
 	fmt.Printf("Total Rooms: %d\n", totalRoom)
 
-	prevSm := loadPrevSuumo()
-
-	diffData := extractDiff(sm, prevSm)
+	igAps := getIgnoredApartments()
+	var diffData []*Apartment
+	if args.noCache {
+		diffData = sm.Apartments
+	} else {
+		diffData = excludeOldApartments(sm, igAps)
+	}
 	existDiff := len(diffData) > 0
 
 	if !existDiff {
@@ -117,6 +241,14 @@ func main() {
 	s := strings.Join(msgs, "\n------------------------------------------------------------\n")
 	postToSlack(s)
 	fmt.Println(s)
+
+	for _, ap := range diffData {
+		igp := new(IgnoredApartment)
+		igp.Name = ap.Name
+		igp.Address = ap.Address
+		igAps = append(igAps, igp)
+	}
+	writeIgnoredApartments(igAps)
 }
 
 func parseFlags() {
@@ -143,11 +275,6 @@ func initSlack() {
 	}
 }
 
-func initTmps(noCache bool) {
-	initTmpDir()
-	initTmpFile(noCache)
-}
-
 func initTmpDir() {
 	tmpDir := tmpDirPath()
 	if f, e := os.Stat(tmpDir); os.IsNotExist(e) || !f.IsDir() {
@@ -155,14 +282,6 @@ func initTmpDir() {
 			postToSlack(e.Error())
 			log.Fatal(e.Error())
 		}
-	}
-}
-
-func initTmpFile(noCache bool) {
-	tmpFilePath := tmpFilePath()
-	if f, e := os.Stat(tmpFilePath); noCache || os.IsNotExist(e) || f.IsDir() {
-		data := new(Suumo)
-		saveTmpData(data)
 	}
 }
 
@@ -411,12 +530,6 @@ func getMaxPageNum(s *goquery.Selection) int {
 }
 
 func tmpDirPath() string {
-	// ex, err := os.Executable()
-	// if err != nil {
-	// 	postToSlack(err.Error())
-	// 	log.Fatal(err.Error())
-	// }
-	// baseDir := filepath.Dir(ex)
 	user, err := user.Current()
 	if err != nil {
 		log.Fatal(err.Error())
@@ -426,7 +539,7 @@ func tmpDirPath() string {
 }
 
 func tmpFilePath() string {
-	return filepath.Join(tmpDirPath(), TMP_FILE_NAME)
+	return filepath.Join(tmpDirPath(), OLD_TMP_FILE_NAME)
 }
 
 func trim(str string) string {
