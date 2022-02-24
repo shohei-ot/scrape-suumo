@@ -458,7 +458,7 @@ func genApartmentDescription(apt *Apartment) string {
 		rDesc := genRoomDescription(r)
 		roomDescs = append(roomDescs, rDesc)
 	}
-	rDesc := strings.Join(roomDescs, "     ----------\n")
+	rDesc := strings.Join(roomDescs, "\n     ----------\n")
 	roomDescs = nil
 	res := fmt.Sprintf(`物件名: %s
 所在地: %s
