@@ -22,6 +22,7 @@ const (
 	TMP_DIR_NAME      = ".cache"
 	OLD_TMP_FILE_NAME = "scrape-suumo-v20220207T0145.json"
 	IGNORE_FILE_NAME  = "scrape-suumo-ignore-v20220208T2122.json"
+	VERSION           = "v0.20220226.1759"
 )
 
 type CliArgs struct {
@@ -31,6 +32,7 @@ type CliArgs struct {
 	useSlack     bool
 	noCache      bool
 	noSlack      bool
+	version      bool
 }
 
 type Suumo struct {
@@ -256,6 +258,8 @@ func parseFlags() {
 	flag.StringVar(&args.slackToken, "token", "", "slack access token")
 	flag.StringVar(&args.slackChannel, "channel", "", "slack channel name")
 
+	flag.BoolVar(&args.version, "v", false, "display version")
+
 	var noCache bool
 	flag.BoolVar(&noCache, "refresh", false, "refresh suumo cache")
 
@@ -267,6 +271,11 @@ func parseFlags() {
 	args.useSlack = len(args.slackToken) > 0 && len(args.slackChannel) > 0
 	args.noCache = noCache
 	args.noSlack = noSlack
+
+	if args.version {
+		fmt.Println(VERSION)
+		os.Exit(0)
+	}
 }
 
 func initSlack() {
