@@ -344,9 +344,11 @@ func getApartmentHit(str string) int {
 	m := regexp.MustCompile(`\s*(\d{1,})件`)
 	matches := m.FindAllStringSubmatch(str, -1)
 	if len(matches) == 0 {
-		errMsg := "no matches: " + str
-		postToSlack(errMsg)
-		log.Fatal(errMsg)
+		msg := "no matches: " + str
+		fmt.Println(msg)
+		os.Exit(0)
+		// postToSlack(errMsg)
+		// log.Fatal(errMsg)
 	}
 	numStr := matches[0][1]
 	num, e := strconv.Atoi(numStr)
